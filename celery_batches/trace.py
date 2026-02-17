@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, List, Tuple
 from celery import signals, states
 from celery._state import _task_stack
 from celery.app.task import Context
+from celery.app.trace import ExceptionInfo
 from celery.utils.log import get_logger
 from kombu.utils.uuid import uuid
 
@@ -22,6 +23,7 @@ logger = get_logger(__name__)
 send_prerun = signals.task_prerun.send
 send_postrun = signals.task_postrun.send
 send_success = signals.task_success.send
+send_failure = signals.task_failure.send
 SUCCESS = states.SUCCESS
 FAILURE = states.FAILURE
 
@@ -38,6 +40,7 @@ def apply_batches_task(
     prerun_receivers = signals.task_prerun.receivers
     postrun_receivers = signals.task_postrun.receivers
     success_receivers = signals.task_success.receivers
+    failure_receivers = signals.task_failure.receivers
 
     # Corresponds to multiple requests, so generate a new UUID.
     task_id = uuid()
@@ -58,6 +61,19 @@ def apply_batches_task(
         except Exception as exc:
             result = None
             state = FAILURE
+            tb = exc.__traceback__
+            einfo = ExceptionInfo()
+            task.on_failure(exc, task_id, args, kwargs={}, einfo=einfo)
+            if failure_receivers:
+                send_failure(
+                    sender=task,
+                    task_id=task_id,
+                    exception=exc,
+                    args=args,
+                    kwargs={},
+                    traceback=tb,
+                    einfo=einfo,
+                )
             logger.error("Error: %r", exc, exc_info=True)
         else:
             if success_receivers:

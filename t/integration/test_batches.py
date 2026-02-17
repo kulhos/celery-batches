@@ -190,7 +190,7 @@ def test_signals(celery_app: Celery, celery_worker: TestWorkController) -> None:
         (signals.task_prerun, 1),
         (signals.task_postrun, 1),
         (signals.task_success, 1),
-        # Other task signals are not implemented.
+        # Other task signals are not expected on successful execution.
         (signals.task_retry, 0),
         (signals.task_failure, 0),
         (signals.task_revoked, 0),
@@ -216,6 +216,37 @@ def test_signals(celery_app: Celery, celery_worker: TestWorkController) -> None:
 
     for counter in signal_counters:
         counter.assert_calls()
+
+
+def test_failure_signals(celery_app: Celery, celery_worker: TestWorkController) -> None:
+    """Ensure task_failure is sent and task_success is not for failing tasks."""
+    seen_postrun_state = None
+
+    def on_postrun(sender: Union[Task, str], **kwargs: Any) -> None:
+        nonlocal seen_postrun_state
+        seen_postrun_state = kwargs["state"]
+
+    @celery_app.task(base=Batches, flush_every=2, flush_interval=0.1)
+    def fails(requests: List[SimpleRequest]) -> None:
+        raise ValueError("boom")
+
+    # Register the task with the worker.
+    celery_worker.consumer.update_strategies()
+
+    failure_counter = SignalCounter(signals.task_failure, 1)
+    success_counter = SignalCounter(signals.task_success, 0)
+    postrun_counter = SignalCounter(signals.task_postrun, 1, on_postrun)
+
+    fails.delay()
+    fails.delay()
+
+    # Let the worker work.
+    _wait_for_ping()
+
+    failure_counter.assert_calls()
+    success_counter.assert_calls()
+    postrun_counter.assert_calls()
+    assert seen_postrun_state == states.FAILURE
 
 
 def test_current_task(celery_app: Celery, celery_worker: TestWorkController) -> None:
